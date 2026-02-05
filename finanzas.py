@@ -1,137 +1,108 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
-conn = sqlite3.connect('finanzas.db', check_same_thread=False)
+# --- CONFIGURACIÓN BASE DE DATOS ---
+conn = sqlite3.connect('negocio.db', check_same_thread=False)
 c = conn.cursor()
 
-# Creación de tablas con columna STOCK
 c.execute('''CREATE TABLE IF NOT EXISTS productos 
-             (id INTEGER PRIMARY KEY, nombre TEXT, costo REAL, venta REAL, stock INTEGER DEFAULT 0)''')
+             (id INTEGER PRIMARY KEY, nombre TEXT, costo REAL, venta REAL, stock INTEGER)''')
 c.execute('''CREATE TABLE IF NOT EXISTS ventas 
-             (id INTEGER PRIMARY KEY, fecha TEXT, producto_id INTEGER, vendidos INTEGER, mermas INTEGER, metodo TEXT)''')
-
-# Migración: Agregar columna stock si no existe (para no romper tu DB actual)
-try:
-    c.execute("ALTER TABLE productos ADD COLUMN stock INTEGER DEFAULT 0")
-except:
-    pass
+             (id INTEGER PRIMARY KEY, fecha TEXT, p_id INTEGER, cant INTEGER, metodo TEXT)''')
 conn.commit()
 
-st.set_page_config(page_title="Control de Caja PRO", layout="wide")
+st.set_page_config(page_title="Caja Maestra", layout="wide")
 
-# --- MENÚ DE PESTAÑAS ---
-tab_reg, tab_alm, tab_bal, tab_list, tab_conf = st.tabs(["📝 REGISTRAR", "📦 ALMACÉN", "💰 BALANCE", "📋 HISTORIAL", "⚙️ CONFIG"])
+# --- PESTAÑAS ---
+t_reg, t_alm, t_hist, t_conf = st.tabs(["🛒 VENTA", "📦 ALMACÉN", "💰 BALANCE", "⚙️ CONFIG"])
 
-# --- PESTAÑA 1: REGISTRAR VENTA ---
-with tab_reg:
-    st.header("Registrar Venta")
-    # Solo mostrar productos que tengan stock > 0
-    productos = pd.read_sql("SELECT * FROM productos WHERE stock > 0", conn)
-    
-    if not productos.empty:
-        with st.form("venta_form", clear_on_submit=True):
-            p_sel = st.selectbox("Producto", productos['nombre'])
-            v_cant = st.number_input("Cantidad vendida", min_value=1, step=1)
-            v_mer = st.number_input("Mermas (pérdidas)", min_value=0, step=1)
-            metodo = st.radio("Método de Pago", ["Efectivo", "Transferencia"], horizontal=True)
-            
+# --- 1. PESTAÑA VENTA ---
+with t_reg:
+    prods = pd.read_sql("SELECT * FROM productos WHERE stock > 0", conn)
+    if not prods.empty:
+        with st.form("v"):
+            p_sel = st.selectbox("Producto", prods['nombre'])
+            cant = st.number_input("Cantidad", min_value=1, step=1)
+            p_pago = st.radio("Pago", ["Efectivo", "Transferencia"], horizontal=True)
             if st.form_submit_button("REGISTRAR VENTA"):
-                p_data = productos[productos['nombre'] == p_sel].iloc[0]
-                p_id = p_data['id']
-                stock_actual = p_data['stock']
-                
-                if v_cant <= stock_actual:
-                    # Insertar venta
-                    c.execute("INSERT INTO ventas (fecha, producto_id, vendidos, mermas, metodo) VALUES (?, ?, ?, ?, ?)",
-                              (date.today().isoformat(), int(p_id), v_cant, v_mer, metodo))
-                    # Descontar del almacén
-                    nuevo_stock = stock_actual - v_cant
-                    c.execute("UPDATE productos SET stock = ? WHERE id = ?", (nuevo_stock, int(p_id)))
+                p_data = prods[prods['nombre'] == p_sel].iloc[0]
+                if cant <= p_data['stock']:
+                    c.execute("INSERT INTO ventas (fecha, p_id, cant, metodo) VALUES (?,?,?,?)",
+                              (date.today().isoformat(), int(p_data['id']), cant, p_pago))
+                    c.execute("UPDATE productos SET stock = stock - ? WHERE id = ?", (cant, int(p_data['id'])))
                     conn.commit()
-                    st.success(f"Venta registrada. Quedan {nuevo_stock} unidades.")
+                    st.success("✅ Venta registrada")
                     st.rerun()
-                else:
-                    st.error(f"No hay suficiente stock. Solo quedan {stock_actual} unidades.")
-    else:
-        st.warning("No hay productos con stock disponible.")
+                else: st.error("❌ No hay suficiente stock")
+    else: st.warning("⚠️ Agrega stock en Configuración para vender.")
 
-# --- PESTAÑA 2: ALMACÉN ---
-with tab_alm:
-    st.header("Inventario de Productos")
-    df_alm = pd.read_sql("SELECT nombre as Producto, stock as 'Cantidad Disponible' FROM productos", conn)
-    if not df_alm.empty:
-        st.dataframe(df_alm, width='stretch', hide_index=True)
-    else:
-        st.info("El almacén está vacío.")
+# --- 2. PESTAÑA ALMACÉN ---
+with t_alm:
+    st.subheader("Inventario Actual")
+    df_a = pd.read_sql("SELECT nombre as Producto, stock as Cantidad, costo, venta FROM productos", conn)
+    st.dataframe(df_a, use_container_width=True, hide_index=True)
 
-# --- PESTAÑA 3: BALANCE ---
-with tab_bal:
-    st.header("Resumen de Ganancias")
-    ver_30 = st.checkbox("Ver últimos 30 días")
-    filtro = (date.today() - timedelta(days=30)).isoformat() if ver_30 else date.today().isoformat()
+# --- 3. PESTAÑA BALANCE (MODIFICADA CON TU REGLA DEL 20%) ---
+with t_hist:
+    st.header("📈 Reparto de Ganancias")
     
-    df = pd.read_sql(f"SELECT p.*, v.* FROM ventas v JOIN productos p ON v.producto_id = p.id WHERE v.fecha >= '{filtro}'", conn)
+    # Traemos los datos
+    df_h = pd.read_sql("""SELECT v.fecha, p.nombre, v.cant, 
+                          (v.cant * p.costo) as inversion,
+                          (v.cant * (p.venta - p.costo)) as ganancia
+                          FROM ventas v JOIN productos p ON v.p_id = p.id""", conn)
     
-    if not df.empty:
-        inv = (df['vendidos'] * df['costo']).sum()
-        total_v = (df['vendidos'] * df['venta']).sum()
-        gan_t = total_v - inv
-        gan_n = gan_t / 2
-        
-        st.metric("🛒 TOTAL VENDIDO", f"${total_v:,.2f}")
-        c1, c2 = st.columns(2)
-        c1.metric("📦 TU INVERSIÓN", f"${inv:,.2f}")
-        c2.metric("📈 TU GANANCIA (50%)", f"${gan_n:,.2f}")
-        st.divider()
-        st.success(f"### 💵 TOTAL A RECOGER: ${inv + gan_n:,.2f}")
-    else:
-        st.info("Sin datos en este periodo.")
-
-# --- PESTAÑA 4: HISTORIAL (CON INVERSIÓN Y GANANCIA) ---
-with tab_list:
-    st.header("Detalle de Ventas")
-    query_h = """
-        SELECT v.fecha as Fecha, p.nombre as Producto, v.vendidos as Cant,
-               (v.vendidos * p.costo) as 'Inversión',
-               (v.vendidos * (p.venta - p.costo)) as 'Ganancia Total',
-               v.metodo as Pago
-        FROM ventas v JOIN productos p ON v.producto_id = p.id ORDER BY v.id DESC
-    """
-    df_h = pd.read_sql(query_h, conn)
     if not df_h.empty:
-        st.dataframe(df_h, width='stretch', hide_index=True)
+        # 1. Cálculos Base
+        total_ganancia = df_h['ganancia'].sum()
+        
+        # 2. Primera División (50% Vendedor / 50% Dueños)
+        pago_vendedor = total_ganancia * 0.50
+        pozo_duenos = total_ganancia * 0.50
+        
+        # 3. Tu Regla Especial (20% del pozo de dueños para TI por la idea)
+        tu_recompensa = pozo_duenos * 0.20
+        resto_socios = pozo_duenos - tu_recompensa
+
+        # --- MOSTRAR RESULTADOS ---
+        st.dataframe(df_h, use_container_width=True) # Tabla de ventas
+        
+        st.divider()
+        
+        # Métricas Grandes
+        kpi1, kpi2 = st.columns(2)
+        kpi1.metric("💵 Ganancia TOTAL", f"${total_ganancia:,.2f}")
+        kpi2.metric("🤝 Parte Vendedor (50%)", f"${pago_vendedor:,.2f}")
+        
+        st.subheader("💼 Bolsillo de los Dueños")
+        col_A, col_B = st.columns(2)
+        
+        # Aquí sale tu dinero apartado
+        col_A.success(f"👑 **TU BONO (20%):** ${tu_recompensa:,.2f}")
+        col_B.info(f"🏢 Resto Negocio: ${resto_socios:,.2f}")
+        
     else:
-        st.info("No hay ventas registradas.")
+        st.info("No hay ventas registradas aún para calcular ganancias.")
 
-# --- PESTAÑA 5: CONFIGURACIÓN (AÑADIR Y ELIMINAR) ---
-with tab_conf:
-    st.header("Gestión de Catálogo")
-    
-    with st.expander("➕ AÑADIR NUEVO PRODUCTO"):
-        with st.form("nuevo_p"):
-            n = st.text_input("Nombre")
-            c_p = st.number_input("Costo", min_value=0.0)
-            v_p = st.number_input("Precio Venta", min_value=0.0)
-            s_p = st.number_input("Stock Inicial", min_value=0, step=1)
-            if st.form_submit_button("Guardar"):
-                c.execute("INSERT INTO productos (nombre, costo, venta, stock) VALUES (?,?,?,?)", (n, c_p, v_p, s_p))
-                conn.commit()
-                st.rerun()
+# --- 4. PESTAÑA CONFIGURACIÓN ---
+with t_conf:
+    with st.expander("➕ Añadir Producto Nuevo"):
+        with st.form("n"):
+            nom = st.text_input("Nombre")
+            co = st.number_input("Costo Unitario")
+            ve = st.number_input("Precio Venta")
+            stk = st.number_input("Stock Inicial", step=1)
+            if st.form_submit_button("Guardar Producto"):
+                c.execute("INSERT INTO productos (nombre, costo, venta, stock) VALUES (?,?,?,?)", (nom, co, ve, stk))
+                conn.commit(); st.rerun()
 
-    st.subheader("Lista de Productos Actuales")
-    prods = pd.read_sql("SELECT id, nombre, stock FROM productos", conn)
-    for index, row in prods.iterrows():
-        col1, col2 = st.columns([3, 1])
-        col1.write(f"**{row['nombre']}** ({row['stock']} unid.)")
-        if col2.button("Eliminar", key=f"del_{row['id']}"):
-            c.execute("DELETE FROM productos WHERE id = ?", (row['id'],))
-            conn.commit()
-            st.rerun()
-
-    st.divider()
-    if st.button("🚨 RESET TOTAL"):
-        c.execute("DELETE FROM ventas"); c.execute("DELETE FROM productos")
-        conn.commit(); st.rerun()
+    st.subheader("🗑️ Eliminar Productos")
+    p_list = pd.read_sql("SELECT id, nombre FROM productos", conn)
+    for i, r in p_list.iterrows():
+        c1, c2 = st.columns([4,1])
+        c1.write(r['nombre'])
+        if c2.button("Borrar", key=r['id']):
+            c.execute("DELETE FROM productos WHERE id=?", (r['id'],))
+            conn.commit(); st.rerun()
