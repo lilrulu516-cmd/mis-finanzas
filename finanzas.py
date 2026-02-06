@@ -44,47 +44,45 @@ with t_alm:
     df_a = pd.read_sql("SELECT nombre as Producto, stock as Cantidad, costo, venta FROM productos", conn)
     st.dataframe(df_a, use_container_width=True, hide_index=True)
 
-# --- 3. PESTAÑA BALANCE (MODIFICADA CON TU REGLA DEL 20%) ---
+# --- 3. PESTAÑA BALANCE ---
 with t_hist:
     st.header("📈 Reparto de Ganancias")
     
-    # Traemos los datos
     df_h = pd.read_sql("""SELECT v.fecha, p.nombre, v.cant, 
+                          (v.cant * p.venta) as total_venta,
                           (v.cant * p.costo) as inversion,
                           (v.cant * (p.venta - p.costo)) as ganancia
                           FROM ventas v JOIN productos p ON v.p_id = p.id""", conn)
     
     if not df_h.empty:
-        # 1. Cálculos Base
+        # Cálculos
+        t_vendido = df_h['total_venta'].sum()
+        t_inversion = df_h['inversion'].sum()
         total_ganancia = df_h['ganancia'].sum()
         
-        # 2. Primera División (50% Vendedor / 50% Dueños)
         pago_vendedor = total_ganancia * 0.50
         pozo_duenos = total_ganancia * 0.50
-        
-        # 3. Tu Regla Especial (20% del pozo de dueños para TI por la idea)
         tu_recompensa = pozo_duenos * 0.20
         resto_socios = pozo_duenos - tu_recompensa
 
-        # --- MOSTRAR RESULTADOS ---
-        st.dataframe(df_h, use_container_width=True) # Tabla de ventas
-        
+        # Interfaz Balance
+        st.dataframe(df_h, use_container_width=True)
         st.divider()
         
-        # Métricas Grandes
-        kpi1, kpi2 = st.columns(2)
-        kpi1.metric("💵 Ganancia TOTAL", f"${total_ganancia:,.2f}")
-        kpi2.metric("🤝 Parte Vendedor (50%)", f"${pago_vendedor:,.2f}")
+        # Nuevas Métricas Solicitadas
+        col1, col2, col3 = st.columns(3)
+        col1.metric("💰 TOTAL VENDIDO", f"${t_vendido:,.2f}")
+        col2.metric("📉 TOTAL INVERSIÓN", f"${t_inversion:,.2f}")
+        col3.metric("💵 GANANCIA NETA", f"${total_ganancia:,.2f}")
         
-        st.subheader("💼 Bolsillo de los Dueños")
-        col_A, col_B = st.columns(2)
-        
-        # Aquí sale tu dinero apartado
-        col_A.success(f"👑 **TU BONO (20%):** ${tu_recompensa:,.2f}")
-        col_B.info(f"🏢 Resto Negocio: ${resto_socios:,.2f}")
-        
+        st.divider()
+        st.subheader("💼 Distribución de Ganancia")
+        k1, k2, k3 = st.columns(3)
+        k1.metric("🤝 Vendedor (50%)", f"${pago_vendedor:,.2f}")
+        k2.success(f"👑 TU BONO (20%): ${tu_recompensa:,.2f}")
+        k3.info(f"🏢 Resto Negocio: ${resto_socios:,.2f}")
     else:
-        st.info("No hay ventas registradas aún para calcular ganancias.")
+        st.info("Sin ventas registradas.")
 
 # --- 4. PESTAÑA CONFIGURACIÓN ---
 with t_conf:
@@ -103,6 +101,6 @@ with t_conf:
     for i, r in p_list.iterrows():
         c1, c2 = st.columns([4,1])
         c1.write(r['nombre'])
-        if c2.button("Borrar", key=r['id']):
+        if c2.button("Borrar", key=f"del_{r['id']}"):
             c.execute("DELETE FROM productos WHERE id=?", (r['id'],))
             conn.commit(); st.rerun()
