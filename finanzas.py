@@ -935,3 +935,4 @@ with tab_conf:
 # --- FOOTER ---
 st.markdown("---")
 st.caption("Control de Caja PRO v2.0 | Desarrollado con Streamlit")
+
